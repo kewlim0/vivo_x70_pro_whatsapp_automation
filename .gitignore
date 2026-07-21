@@ -1,0 +1,19 @@
+.DS_Store
+.vscode/
+__pycache__/
+*.py[cod]
+
+# Local Android SDK/platform tools are machine-specific and large.
+android-sdk/
+platform-tools/
+
+# Runtime logs, generated output, and private chat/customer data.
+txt/
+TXT File/
+daily_photos/
+debug_search_error_*.png
+
+# Local environment files.
+.env
+.venv/
+venv/
