@@ -8,6 +8,7 @@ android-sdk/
 platform-tools/
 
 # Runtime logs, generated output, and private chat/customer data.
+logs/
 txt/
 TXT File/
 daily_photos/

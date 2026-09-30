@@ -8,12 +8,17 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import os
+import sys
+import select
 import base64
 import signal
 import subprocess
 import argparse
 import random
 import re
+import shutil
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -27,6 +32,8 @@ GMT_PLUS_7 = timezone(timedelta(hours=7))
 
 # Global variable to store Appium server port
 APPIUM_PORT = 4723  # Default port, can be overridden via command line
+APPIUM_HOST = "127.0.0.1"
+APPIUM_PROCESS = None
 
 # Configuration: Chat name prefix to remove before searching
 CHAT_NAME_PREFIX_TO_REMOVE = "NepalWin🇳🇵"  # Change this to customize what prefix to remove
@@ -109,8 +116,8 @@ DEVICE_CONFIGS = {
     },
 
     "VIVO x70 pro": {
-        "photo_select_x": 140,
-        "photo_select_y": 1260,
+        "photo_select_x": 410,
+        "photo_select_y": 1245,
         "photo_select_fallback_x": 140,
         "photo_select_fallback_y": 1260,
         "caption_area_x_offset": 0,  # Offset from center, 0 means use center
@@ -151,6 +158,7 @@ SELECTED_WHATSAPP_VARIANT = {
 
 # Track whether search has already run once in this session.
 _HAS_SEARCHED_ONCE = False
+_JUST_RESUMED_FROM_COUNTDOWN = False
 
 # Keep recent generated messages different during a single run.
 _RECENT_MESSAGE_VARIANTS = []
@@ -361,6 +369,117 @@ def get_adb_devices():
         print("[ERROR] ADB command not found. Please ensure ADB is installed and in PATH.")
         return []
 
+def run_adb_command(args, check=True):
+    """Run an ADB command against the selected device when available."""
+    command = ['adb']
+    if SELECTED_ADB_DEVICE:
+        command.extend(['-s', SELECTED_ADB_DEVICE])
+    command.extend(args)
+
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=check
+    )
+
+def get_current_android_user():
+    """Return the currently active Android user ID."""
+    try:
+        result = run_adb_command(['shell', 'am', 'get-current-user'])
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"[APPIUM] Failed to detect current Android user: {e.stderr.strip() or e.stdout.strip()}")
+        return None
+    except FileNotFoundError:
+        print("[APPIUM] ADB command not found. Cannot check Android user profile.")
+        return None
+
+def get_packages_for_user(user_id):
+    """Return packages installed/enabled for a specific Android user profile."""
+    try:
+        result = run_adb_command(['shell', 'pm', 'list', 'packages', '--user', str(user_id)])
+        packages = set()
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('package:'):
+                packages.add(line.replace('package:', '', 1))
+        return packages
+    except subprocess.CalledProcessError as e:
+        print(f"[APPIUM] Failed to list packages for Android user {user_id}: {e.stderr.strip() or e.stdout.strip()}")
+        return None
+
+def ensure_appium_tools_for_current_user():
+    """Check and optionally enable Appium helper tools for the active Android user."""
+    required_packages = [
+        'io.appium.settings',
+        'io.appium.uiautomator2.server',
+        'io.appium.uiautomator2.server.test'
+    ]
+
+    current_user = get_current_android_user()
+    if current_user is None:
+        return False
+
+    packages = get_packages_for_user(current_user)
+    if packages is None:
+        return False
+
+    missing_packages = [package for package in required_packages if package not in packages]
+    if not missing_packages:
+        print(f"[APPIUM] Appium tools are ready for Android user {current_user}")
+        return True
+
+    print("\n" + "="*60)
+    print(f"[APPIUM] Missing Appium tools in Android user {current_user}:")
+    for package in missing_packages:
+        print(f"  - {package}")
+    print()
+    print("Install/enable missing tools for this profile?")
+    print("1. Yes, install now")
+    print("2. No, stop script")
+
+    while True:
+        try:
+            choice = input("Appium tools install: ").strip()
+            if choice == "1":
+                break
+            if choice == "2":
+                print("[APPIUM] Appium tool installation skipped. Stopping script.")
+                return False
+            print("[ERROR] Please enter 1 or 2")
+        except KeyboardInterrupt:
+            print("\n[APPIUM] Appium tool installation cancelled")
+            return False
+
+    for package in missing_packages:
+        try:
+            print(f"[APPIUM] Installing/enabling {package} for Android user {current_user}...")
+            run_adb_command([
+                'shell', 'cmd', 'package', 'install-existing',
+                '--user', str(current_user), package
+            ])
+            print(f"[APPIUM] Installed/enabled: {package}")
+        except subprocess.CalledProcessError as e:
+            error_text = e.stderr.strip() or e.stdout.strip() or str(e)
+            print(f"[APPIUM] Failed to install/enable {package}: {error_text}")
+            print("[APPIUM] If the package does not exist globally, start one Appium session on Owner first or reinstall Appium helpers.")
+
+    packages = get_packages_for_user(current_user)
+    if packages is None:
+        return False
+
+    missing_packages = [package for package in required_packages if package not in packages]
+    if missing_packages:
+        print(f"[APPIUM] Still missing Appium tools in Android user {current_user}:")
+        for package in missing_packages:
+            print(f"  - {package}")
+        print("[APPIUM] Cannot continue until all Appium helper tools are available.")
+        return False
+
+    print(f"[APPIUM] Appium tools are ready for Android user {current_user}")
+    return True
+
 def select_adb_device():
     """Interactive ADB device selection menu"""
     global SELECTED_ADB_DEVICE
@@ -520,6 +639,87 @@ def signal_handler(sig, frame):
         pass
     os._exit(0)
 
+def get_appium_url():
+    """Return the local Appium server URL."""
+    return f"http://{APPIUM_HOST}:{APPIUM_PORT}"
+
+def is_appium_server_ready(timeout=1):
+    """Check whether Appium is already responding on the configured port."""
+    status_url = f"{get_appium_url()}/status"
+    try:
+        with urllib.request.urlopen(status_url, timeout=timeout) as response:
+            return 200 <= response.status < 500
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+def start_appium_server_if_needed(wait_seconds=25):
+    """Start Appium automatically when no server is listening."""
+    global APPIUM_PROCESS
+
+    if is_appium_server_ready():
+        print(f"[APPIUM] Server already running at {get_appium_url()}")
+        return True
+
+    appium_bin = shutil.which("appium")
+    if not appium_bin:
+        print("[APPIUM] Appium command not found. Install it with: npm install -g appium")
+        return False
+
+    log_dir = project_path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"appium_{APPIUM_PORT}.log"
+
+    print(f"[APPIUM] No server on {get_appium_url()}, starting Appium now...")
+    print(f"[APPIUM] Log file: {log_path}")
+
+    log_file = open(log_path, "a", encoding="utf-8")
+    log_file.write(f"\n\n[{datetime.now().isoformat(timespec='seconds')}] Starting Appium\n")
+    log_file.flush()
+
+    env = os.environ.copy()
+    android_home = env.get("ANDROID_HOME") or str(Path.home() / "Library" / "Android" / "sdk")
+    env["ANDROID_HOME"] = android_home
+    env["ANDROID_SDK_ROOT"] = env.get("ANDROID_SDK_ROOT") or android_home
+    env["PATH"] = (
+        f"{android_home}/platform-tools:"
+        f"/opt/homebrew/bin:/usr/local/bin:"
+        f"{env.get('PATH', '')}"
+    )
+
+    APPIUM_PROCESS = subprocess.Popen(
+        [
+            appium_bin,
+            "server",
+            "--address",
+            APPIUM_HOST,
+            "--port",
+            str(APPIUM_PORT),
+            "--log-level",
+            "info"
+        ],
+        cwd=str(BASE_DIR),
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True
+    )
+
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if is_appium_server_ready():
+            print(f"[APPIUM] Server is ready at {get_appium_url()}")
+            return True
+
+        exit_code = APPIUM_PROCESS.poll()
+        if exit_code is not None:
+            print(f"[APPIUM] Appium stopped early with exit code {exit_code}. Check: {log_path}")
+            return False
+
+        time.sleep(0.5)
+
+    print(f"[APPIUM] Timed out waiting for Appium. Check: {log_path}")
+    return False
+
 def setup_driver():
     """Initialize Appium driver with Android capabilities"""
     global SELECTED_ADB_DEVICE, APPIUM_PORT
@@ -548,8 +748,11 @@ def setup_driver():
     options.uiautomator2_server_launch_timeout = 60000  # 60 seconds
     options.uiautomator2_server_install_timeout = 60000  # 60 seconds
 
+    if not start_appium_server_if_needed():
+        raise RuntimeError("Appium server is not running and could not be started automatically.")
+
     # Connect to Appium server using configured port
-    appium_url = f"http://localhost:{APPIUM_PORT}"
+    appium_url = get_appium_url()
     print(f"[DRIVER] Connecting to Appium server at: {appium_url}")
     driver = WebDriver(appium_url, options=options)
     return driver
@@ -753,6 +956,35 @@ def xpath_literal(text):
     if '"' not in text:
         return f'"{text}"'
     return "concat(" + ", \"'\", ".join(f"'{part}'" for part in text.split("'")) + ")"
+
+def find_whatsapp_main_element(driver, timeout=10, log_result=True):
+    """Return True when a main WhatsApp screen indicator is visible."""
+    combined_xpath = (
+        f"//*[@resource-id='{wa_id('fabText')}'] | "
+        f"//*[@resource-id='{wa_id('fab')}'] | "
+        f"//*[@resource-id='{wa_id('toolbar_logo')}']"
+    )
+
+    try:
+        wait = WebDriverWait(driver, timeout)
+        elements = wait.until(EC.presence_of_all_elements_located((AppiumBy.XPATH, combined_xpath)))
+        for element in elements:
+            if element.is_displayed():
+                if log_result:
+                    try:
+                        found_element_name = element.get_attribute('text') or element.get_attribute('resource-id') or "main element"
+                    except Exception:
+                        found_element_name = "main element"
+                    print(f"[LOAD] Found main element: {found_element_name}")
+                return True
+    except TimeoutException:
+        if log_result:
+            print("[LOAD] Timeout waiting for main WhatsApp elements")
+    except Exception as e:
+        if log_result:
+            print(f"[LOAD] Error checking main WhatsApp elements: {e}")
+
+    return False
 
 def wait_for_whatsapp_loaded(driver, timeout=15):
     """Wait for WhatsApp to be fully loaded with proper backend checks"""
@@ -1129,38 +1361,74 @@ def save_processed_chat(log_file, chat_name):
     except Exception as e:
         print(f"Error saving processed chat: {str(e)}")
 
+def wait_for_enter(timeout):
+    """Wait up to timeout seconds; return True if Enter was pressed."""
+    try:
+        if not sys.stdin.isatty():
+            time.sleep(timeout)
+            return False
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if ready:
+            sys.stdin.readline()
+            return True
+    except Exception:
+        time.sleep(timeout)
+    return False
+
 def maybe_pause_after_batch(driver, processed_count):
-    """Pause randomly after every 3 processed chats while keeping Appium responsive."""
-    if processed_count > 0 and processed_count % 3 == 0:
-        pause_seconds = random.choice([800, 1100, 1000])
-        keepalive_interval = 30
-        color_magenta = "\033[95m"
-        color_cyan = "\033[96m"
-        color_yellow = "\033[93m"
-        color_green = "\033[92m"
-        color_reset = "\033[0m"
+    """Pause after configured batches while keeping Appium responsive."""
+    global _JUST_RESUMED_FROM_COUNTDOWN
 
-        print(f"\n{color_magenta}{'=' * 60}{color_reset}")
-        print(f"{color_cyan}[PAUSE]{color_reset} Processed {color_yellow}{processed_count}{color_reset} chats. Resting for {color_yellow}{pause_seconds}{color_reset} seconds...")
-        print(f"{color_magenta}{'=' * 60}{color_reset}")
+    should_pause = processed_count > 0 and processed_count % 4 == 0
+    if not should_pause:
+        return driver
 
-        for remaining in range(pause_seconds, 0, -1):
-            print(f"\r{color_green}[COUNTDOWN]{color_reset} Continuing in {color_yellow}{remaining:02d}{color_reset} seconds...", end='', flush=True)
-            elapsed = pause_seconds - remaining
-            if elapsed > 0 and elapsed % keepalive_interval == 0:
-                try:
-                    if driver:
-                        driver.get_window_size()
-                        print(f"\n[KEEPALIVE] Appium session responsive ({elapsed}s into pause)")
-                    else:
-                        print("\n[KEEPALIVE] Driver missing during pause, attempting recovery...")
-                        driver = recover_session(driver, max_attempts=1)
-                except Exception as keepalive_error:
-                    print(f"\n[KEEPALIVE] Appium keep-alive failed: {keepalive_error}")
-                    driver = recover_session(driver, max_attempts=1)
+    print("[BACK] Extra Back before countdown...")
+    if not is_driver_alive(driver):
+        print("[BACK] Driver unavailable before extra Back, attempting recovery...")
+        driver = recover_session(driver, max_attempts=1)
+
+    if driver:
+        try:
+            driver.press_keycode(4)  # KEYCODE_BACK
             time.sleep(1)
+        except Exception as back_error:
+            print(f"[BACK] Extra Back failed: {back_error}")
+    else:
+        print("[BACK] Skipping extra Back because driver recovery failed")
 
-        print(f"\r{color_green}[COUNTDOWN]{color_reset} Continuing now.{' ' * 24}\n")
+    pause_seconds = random.choice([800, 1100, 1000])
+    keepalive_interval = 30
+    color_magenta = "\033[95m"
+    color_cyan = "\033[96m"
+    color_yellow = "\033[93m"
+    color_green = "\033[92m"
+    color_reset = "\033[0m"
+
+    print(f"\n{color_magenta}{'=' * 60}{color_reset}")
+    print(f"{color_cyan}[PAUSE]{color_reset} Processed {color_yellow}{processed_count}{color_reset} chats. Resting for {color_yellow}{pause_seconds}{color_reset} seconds...")
+    print(f"{color_magenta}{'=' * 60}{color_reset}")
+    print(f"{color_cyan}[PAUSE]{color_reset} Press {color_yellow}Enter{color_reset} to skip the wait")
+
+    for remaining in range(pause_seconds, 0, -1):
+        print(f"\r{color_green}[COUNTDOWN]{color_reset} Continuing in {color_yellow}{remaining:02d}{color_reset} seconds... (Enter to skip)", end='', flush=True)
+        elapsed = pause_seconds - remaining
+        if elapsed > 0 and elapsed % keepalive_interval == 0:
+            try:
+                if driver:
+                    driver.get_window_size()
+                else:
+                    print("\n[KEEPALIVE] Driver missing during pause, attempting recovery...")
+                    driver = recover_session(driver, max_attempts=1)
+            except Exception as keepalive_error:
+                print(f"\n[KEEPALIVE] Appium keep-alive failed: {keepalive_error}")
+                driver = recover_session(driver, max_attempts=1)
+        if wait_for_enter(1):
+            print(f"\n{color_cyan}[PAUSE]{color_reset} Enter pressed - skipping remaining wait")
+            break
+
+    print(f"\r{color_green}[COUNTDOWN]{color_reset} Continuing now.{' ' * 24}\n")
+    _JUST_RESUMED_FROM_COUNTDOWN = True
     return driver
 
 def get_daily_photo_path():
@@ -1568,7 +1836,7 @@ def go_back_to_chat_list(driver):
 
 def search_and_find_chat(driver, chat_name):
     """Search for a specific chat using WhatsApp search functionality"""
-    global _HAS_SEARCHED_ONCE
+    global _HAS_SEARCHED_ONCE, _JUST_RESUMED_FROM_COUNTDOWN
 
     search_start = time.time()
     try:
@@ -1577,40 +1845,23 @@ def search_and_find_chat(driver, chat_name):
         # First search starts after launch on the main screen. Subsequent searches
         # back out of the previous chat/search screen before checking the home screen.
         if _HAS_SEARCHED_ONCE:
-            driver.press_keycode(4)  # KEYCODE_BACK
-            time.sleep(0.8)
+            skip_initial_back = False
+            if _JUST_RESUMED_FROM_COUNTDOWN:
+                _JUST_RESUMED_FROM_COUNTDOWN = False
+                print("[RESUME] Checking WhatsApp main screen before pressing Back...")
+                if find_whatsapp_main_element(driver, timeout=2, log_result=False):
+                    print("[RESUME] Main screen already visible, skipping extra Back")
+                    skip_initial_back = True
+
+            if not skip_initial_back:
+                driver.press_keycode(4)  # KEYCODE_BACK
+                time.sleep(0.8)
         else:
             _HAS_SEARCHED_ONCE = True
 
         # First, ensure we're on the main WhatsApp screen
         try:
-            # Check for FAB (floating action button) to verify home screen
-            combined_xpath = (
-                f"//*[@resource-id='{wa_id('fabText')}'] | "
-                f"//*[@resource-id='{wa_id('fab')}'] | "
-                f"//*[@resource-id='{wa_id('toolbar_logo')}']"
-            )
-
-            # Wait for at least one main indicator to be present
-            main_found = False
-            found_element_name = None
-            wait = WebDriverWait(driver, 10)
-            try:
-                elements = wait.until(EC.presence_of_all_elements_located((AppiumBy.XPATH, combined_xpath)))
-                for element in elements:
-                    if element.is_displayed():
-                        # Get element details for logging
-                        try:
-                            found_element_name = element.get_attribute('text') or element.get_attribute('resource-id') or "main element"
-                        except:
-                            found_element_name = "main element"
-                        print(f"[LOAD] Found main element: {found_element_name}")
-                        main_found = True
-                        break
-            except TimeoutException:
-                print("[LOAD] Timeout waiting for main WhatsApp elements")
-
-            if not main_found:
+            if not find_whatsapp_main_element(driver, timeout=10):
                 print("[LOAD] No main WhatsApp elements found, pressing back and relaunching...")
                 driver.press_keycode(4)  # Back button
                 time.sleep(.5)
@@ -1746,7 +1997,8 @@ def search_and_find_chat(driver, chat_name):
                         "translate(@text, 'CONTACTS', 'contacts')='contacts' or "
                         "translate(@text, 'OTHER CONTACTS', 'other contacts')='other contacts' or "
                         "translate(@text, 'NOT IN YOUR CONTACTS', 'not in your contacts')='not in your contacts' or "
-                        "translate(@text, 'NOT IN YOUR CONTACT', 'not in your contact')='not in your contact')]"
+                        "translate(@text, 'NOT IN YOUR CONTACT', 'not in your contact')='not in your contact' or "
+                        "translate(@text, 'PEOPLE', 'people')='people')]"
                     )
 
                     for title in driver.find_elements(AppiumBy.XPATH, section_title_xpath):
@@ -1762,10 +2014,24 @@ def search_and_find_chat(driver, chat_name):
                     if result_section_titles:
                         first_section_y = min(title_y for title_y, _ in result_section_titles)
 
+                        # Rows under the "Messages" section are message hits, not chats - exclude them
+                        messages_section_y = None
+                        try:
+                            for msg_title in driver.find_elements(AppiumBy.XPATH, "//android.widget.TextView[contains(@resource-id, ':id/title') and translate(@text, 'MESSAGES', 'messages')='messages']"):
+                                if msg_title.is_displayed() and msg_title.location['y'] > first_section_y:
+                                    messages_section_y = msg_title.location['y']
+                                    break
+                        except Exception:
+                            pass
+
                         contact_row_selectors = [
                             (AppiumBy.XPATH, "//android.widget.RelativeLayout[contains(@resource-id, ':id/contact_row_container')]"),
                             (AppiumBy.XPATH, "//android.widget.LinearLayout[contains(@resource-id, ':id/contact_row_container')]"),
-                            (AppiumBy.XPATH, "//*[contains(@resource-id, ':id/contact_row_container')]")
+                            (AppiumBy.XPATH, "//*[contains(@resource-id, ':id/contact_row_container')]"),
+                            # "Not in your contacts" rows (row_container with a CHAT button)
+                            (AppiumBy.XPATH, "//*[contains(@resource-id, ':id/row_container')]"),
+                            # "People" section rows use the conversation row layout
+                            (AppiumBy.XPATH, "//*[contains(@resource-id, ':id/conversations_row_contact_name')]")
                         ]
 
                         for selector in contact_row_selectors:
@@ -1778,9 +2044,11 @@ def search_and_find_chat(driver, chat_name):
                                     if row.is_displayed():
                                         row_y = row.location['y']
                                         print(f"[DEBUG] Result row {idx+1}: Y={row_y}, visible=True")
-                                        if row_y > first_section_y:
+                                        if messages_section_y is not None and row_y > messages_section_y:
+                                            print(f"[EXCLUDED] Row at Y={row_y} is under Messages section")
+                                        elif row_y > first_section_y:
                                             visible_results.append(row)
-                                            print(f"[VALID_RESULT] Row at Y={row_y} is under Chats/Contacts results")
+                                            print(f"[VALID_RESULT] Row at Y={row_y} is under Chats/Contacts/People results")
                                         else:
                                             print(f"[EXCLUDED] Row at Y={row_y} is above result sections")
                                     else:
@@ -1791,8 +2059,21 @@ def search_and_find_chat(driver, chat_name):
                                 if visible_results:
                                     search_time = time.time() - search_start
                                     print(f"[\033[92mSUCCESS\033[0m] Search result found under Chats/Contacts after {search_time:.2f}s")
-                                    visible_results[0].click()
-                                    print("[CLICKED] Opened first visible search result")
+                                    first_result = visible_results[0]
+                                    chat_buttons = first_result.find_elements(AppiumBy.XPATH, ".//*[contains(@resource-id, ':id/action_btn')]")
+                                    if chat_buttons:
+                                        button_text = (chat_buttons[0].text or '').strip().upper()
+                                        if 'INVITE' in button_text:
+                                            search_time = time.time() - search_start
+                                            print(f"[\033[91mNOT_ON_WHATSAPP\033[0m] '{chat_name}' shows INVITE button - skipping after {search_time:.2f}s")
+                                            driver.press_keycode(4)  # Back button
+                                            time.sleep(0.5)
+                                            return False
+                                        chat_buttons[0].click()
+                                        print("[CLICKED] Tapped CHAT button on first visible search result")
+                                    else:
+                                        first_result.click()
+                                        print("[CLICKED] Opened first visible search result")
                                     return True
 
                             except Exception as selector_error:
@@ -1830,7 +2111,7 @@ def search_and_find_chat(driver, chat_name):
                         pass
 
                     try:
-                        result_section = driver.find_element(AppiumBy.XPATH, "//android.widget.TextView[contains(@resource-id, ':id/title') and (translate(@text, 'CHATS', 'chats')='chats' or translate(@text, 'CONTACTS', 'contacts')='contacts' or translate(@text, 'OTHER CONTACTS', 'other contacts')='other contacts' or translate(@text, 'NOT IN YOUR CONTACTS', 'not in your contacts')='not in your contacts' or translate(@text, 'NOT IN YOUR CONTACT', 'not in your contact')='not in your contact')]")
+                        result_section = driver.find_element(AppiumBy.XPATH, "//android.widget.TextView[contains(@resource-id, ':id/title') and (translate(@text, 'CHATS', 'chats')='chats' or translate(@text, 'CONTACTS', 'contacts')='contacts' or translate(@text, 'OTHER CONTACTS', 'other contacts')='other contacts' or translate(@text, 'NOT IN YOUR CONTACTS', 'not in your contacts')='not in your contacts' or translate(@text, 'NOT IN YOUR CONTACT', 'not in your contact')='not in your contact' or translate(@text, 'PEOPLE', 'people')='people')]")
                         if result_section.is_displayed():
                             result_section_exists = True
                             print(f"[DEBUG] Chats/Contacts/Not-in-contact(s) section exists - still checking for results")
@@ -2129,21 +2410,6 @@ def process_target_chats(driver):
                 print(f"   - Back to list: {back_time:.2f}s")
                 processed_this_run += 1
 
-                if processed_this_run % 3 == 0:
-                    print("[BACK] Extra Back before countdown...")
-                    if not is_driver_alive(driver):
-                        print("[BACK] Driver unavailable before extra Back, attempting recovery...")
-                        driver = recover_session(driver, max_attempts=1)
-
-                    if driver:
-                        try:
-                            driver.press_keycode(4)  # KEYCODE_BACK
-                            time.sleep(1)
-                        except Exception as back_error:
-                            print(f"[BACK] Extra Back failed: {back_error}")
-                    else:
-                        print("[BACK] Skipping extra Back because driver recovery failed")
-
                 driver = maybe_pause_after_batch(driver, processed_this_run)
                 print("─" * 60)
 
@@ -2228,6 +2494,10 @@ def main():
         whatsapp_variant = select_whatsapp_variant()
         if whatsapp_variant is None:
             print("[ERROR] No WhatsApp variant selected. Exiting...")
+            return
+
+        if not ensure_appium_tools_for_current_user():
+            print("[ERROR] Appium helper tools are not ready for the current Android user. Exiting...")
             return
 
         print("\nStarting Appium session...")

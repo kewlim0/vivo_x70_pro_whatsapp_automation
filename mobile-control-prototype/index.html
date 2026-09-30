@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Device Control Prototype</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="stage" aria-label="Mobile app preview stage">
+      <section class="phone-shell" aria-label="Mobile app container">
+        <section class="screen active" id="screen-login">
+          <div class="brand-orb">
+            <span>◇</span>
+          </div>
+          <header class="center-header">
+            <h1>Welcome Back</h1>
+            <p>Identify this device</p>
+          </header>
+
+          <label class="field-label" for="deviceName">Device Name</label>
+          <div class="input-row">
+            <span>▣</span>
+            <input id="deviceName" value="Phone 2" />
+            <button type="button" class="icon-button" aria-label="Clear device name">×</button>
+          </div>
+
+          <p class="field-label">Select Role</p>
+          <div class="mode-cards">
+            <button class="mode-card selected" type="button" data-role="admin">
+              <span class="mode-icon blue">♕</span>
+              <span>
+                <strong>Admin Mode</strong>
+                <small>Control devices and manage automation.</small>
+              </span>
+              <b>✓</b>
+            </button>
+            <button class="mode-card" type="button" data-role="run">
+              <span class="mode-icon green">▶</span>
+              <span>
+                <strong>Run Mode</strong>
+                <small>Receive commands and run automation.</small>
+              </span>
+              <b></b>
+            </button>
+          </div>
+
+          <div class="status-tile">
+            <span>Status</span>
+            <strong><i class="dot green"></i>Online</strong>
+            <small>Connected to server</small>
+          </div>
+
+          <button class="primary-action" type="button" data-screen="devices">Continue</button>
+        </section>
+
+        <section class="screen" id="screen-devices">
+          <header class="topbar">
+            <button class="ghost-button" type="button" aria-label="Menu">☰</button>
+            <h2>Devices</h2>
+            <button class="ghost-button has-alert" type="button" aria-label="Notifications">♧</button>
+          </header>
+
+          <div class="metric-grid">
+            <article><span>All</span><strong>5</strong></article>
+            <article><span>Online</span><strong class="green-text">3</strong></article>
+            <article><span>Running</span><strong class="yellow-text">2</strong></article>
+            <article><span>Offline</span><strong class="red-text">1</strong></article>
+          </div>
+
+          <div class="device-list">
+            <article class="device-card selected-device" data-device="Phone 2">
+              <div class="device-card-head">
+                <span class="device-icon cyan">▯</span>
+                <h3>Phone 2</h3>
+                <span class="pill online">● Online</span>
+              </div>
+              <dl>
+                <div><dt>Mode:</dt><dd>Run Mode</dd></div>
+                <div><dt>Status:</dt><dd>Idle</dd></div>
+                <div><dt>Spec:</dt><dd>v1.2.3</dd></div>
+                <div><dt>Synced:</dt><dd>1m ago</dd></div>
+              </dl>
+              <button class="outline-action" type="button" data-screen="approval">▣ Request Control</button>
+            </article>
+
+            <article class="device-card" data-device="Phone 1">
+              <div class="device-card-head">
+                <span class="device-icon cyan">▯</span>
+                <h3>Phone 1</h3>
+                <span class="pill running">● Running</span>
+              </div>
+              <dl>
+                <div><dt>Mode:</dt><dd>Run Mode</dd></div>
+                <div><dt>Status:</dt><dd>Running</dd></div>
+                <div><dt>Spec:</dt><dd>v1.2.3</dd></div>
+                <div><dt>Synced:</dt><dd>30s ago</dd></div>
+              </dl>
+              <button class="outline-action" type="button" data-screen="approval">▣ Request Control</button>
+            </article>
+
+            <article class="device-card muted" data-device="Phone 3">
+              <div class="device-card-head">
+                <span class="device-icon purple">▯</span>
+                <h3>Phone 3</h3>
+                <span class="pill offline">● Offline</span>
+              </div>
+              <dl>
+                <div><dt>Mode:</dt><dd>Run Mode</dd></div>
+                <div><dt>Status:</dt><dd>Offline</dd></div>
+                <div><dt>Spec:</dt><dd>v1.2.2</dd></div>
+                <div><dt>Synced:</dt><dd>2h ago</dd></div>
+              </dl>
+            </article>
+          </div>
+        </section>
+
+        <section class="screen" id="screen-approval">
+          <div class="blurred-bg" aria-hidden="true"></div>
+          <div class="approval-card">
+            <div class="large-icon">▯</div>
+            <h2>Phone 1</h2>
+            <p>wants to control<br />this device</p>
+            <div class="request-meta">
+              <span>Request Time</span>
+              <strong>10:24:15 AM</strong>
+            </div>
+            <div class="countdown">
+              <span>Auto approve in</span>
+              <strong id="approvalCountdown">00:28</strong>
+            </div>
+            <button class="success-action" type="button" data-screen="status">✓ Approve</button>
+            <button class="danger-action" type="button" data-screen="devices">× Deny</button>
+            <small>Current Role: Run Mode</small>
+          </div>
+        </section>
+
+        <section class="screen" id="screen-status">
+          <header class="topbar">
+            <button class="ghost-button" type="button" aria-label="Menu">☰</button>
+            <h2>Status</h2>
+            <span class="pill online">● Online</span>
+          </header>
+
+          <article class="controlled-card">
+            <span class="shield">✓</span>
+            <div>
+              <small>Controlled By</small>
+              <h3>Phone 1 (Admin)</h3>
+              <p>Since 10:25 AM</p>
+            </div>
+          </article>
+
+          <article class="info-card">
+            <div><span>Device Name</span><strong>Phone 2</strong></div>
+            <div><span>Device ID</span><strong>a1b2c3d4e5f6</strong></div>
+            <div><span>Android User</span><strong>New user</strong></div>
+            <div><span>Spec Version</span><strong>v1.2.3</strong></div>
+            <div><span>Last Sync</span><strong>1m ago</strong></div>
+            <div><span>Run Status</span><strong class="pill running">● Running</strong></div>
+          </article>
+
+          <button class="danger-action sticky-action" type="button">■ Stop Run (Emergency)</button>
+        </section>
+
+        <section class="screen" id="screen-terminal">
+          <header class="topbar">
+            <button class="ghost-button" type="button" data-screen="devices" aria-label="Back">‹</button>
+            <h2>Terminal View</h2>
+            <span class="connection"><i class="dot green"></i>Connected</span>
+          </header>
+
+          <div class="select-row">
+            <label>Runnet Spec
+              <select><option>Runner: Phone 2</option></select>
+            </label>
+            <label>Spec: v1.2.3
+              <select><option>Default</option></select>
+            </label>
+          </div>
+
+          <pre class="terminal-log" id="terminalLog"></pre>
+
+          <div class="terminal-actions">
+            <button class="success-outline" type="button" id="appendLog">▶ Start Run</button>
+            <button class="danger-outline" type="button">■ Stop Run</button>
+            <button class="neutral-outline" type="button" id="clearLog">⌫ Clear</button>
+            <button class="neutral-outline" type="button">⇩ Download</button>
+          </div>
+
+          <div class="run-footer">
+            <span>Runner: Phone 2</span>
+            <span>Status: <b>Running</b></span>
+            <span>Spec: <b>v1.2.3</b></span>
+          </div>
+        </section>
+
+        <section class="screen" id="screen-specs">
+          <header class="topbar">
+            <button class="ghost-button" type="button" data-screen="devices" aria-label="Back">‹</button>
+            <h2>Spec Manager</h2>
+            <span></span>
+          </header>
+
+          <label class="field-label">Select Spec</label>
+          <div class="input-row">
+            <span>Default Spec (v1.2.3)</span>
+            <strong class="tiny-badge">Latest</strong>
+          </div>
+
+          <h3 class="section-title">Device Config (Coordinates)</h3>
+          <div class="form-grid">
+            <label>photo_select_x<input value="532" /></label>
+            <label>photo_select_y<input value="1187" /></label>
+            <label>caption_area_y<input value="846" /></label>
+            <label>send_button_x<input value="1032" /></label>
+            <label>send_button_y<input value="1875" /></label>
+            <label>search_button_x<input value="478" /></label>
+            <label>search_button_y<input value="312" /></label>
+          </div>
+
+          <h3 class="section-title">Run Settings</h3>
+          <div class="form-grid">
+            <label>Batch Size<input value="10" /></label>
+            <label>Pause (seconds)<select><option>5</option><option>800</option><option>1000</option></select></label>
+            <label>WhatsApp Variant<select><option>WhatsApp</option><option>WA Business</option></select></label>
+            <label>Send Mode<select><option>Photo + Text</option><option>Text Only</option></select></label>
+          </div>
+          <button class="primary-action" type="button">▣ Save Spec</button>
+          <p class="saved-note">✓ Saved & Synced · 10:24 AM</p>
+        </section>
+
+        <section class="screen" id="screen-run">
+          <header class="topbar">
+            <button class="ghost-button" type="button" data-screen="devices" aria-label="Back">‹</button>
+            <h2>Run Setup</h2>
+            <span></span>
+          </header>
+
+          <div class="stacked-form">
+            <label>Target Device<select><option>● Phone 2 (Online)</option></select></label>
+            <label>Select Spec<select><option>Default Spec (v1.2.3)</option></select></label>
+            <div class="range-row">
+              <label>From<input value="1" /></label>
+              <label>To<input value="50" /></label>
+            </div>
+          </div>
+
+          <article class="preview-card">
+            <h3>Run Settings Preview</h3>
+            <div><span>Batch Size</span><strong>10 messages</strong></div>
+            <div><span>Pause (seconds)</span><strong>5 sec</strong></div>
+            <div><span>WhatsApp Variant</span><strong>WhatsApp</strong></div>
+            <div><span>Send Mode</span><strong>Photo + Text</strong></div>
+            <div><span>Total Messages</span><strong>50</strong></div>
+            <div><span>Est. Time</span><strong>~4m 10s</strong></div>
+          </article>
+
+          <button class="primary-action" type="button" data-screen="confirm">▶ Send Run Command</button>
+          <p class="helper-text">Device will start after sync.</p>
+        </section>
+
+        <section class="screen" id="screen-confirm">
+          <div class="confirm-wrap">
+            <div class="send-orb">↗</div>
+            <h2>Send Run Command?</h2>
+            <p>This will start automation on<br /><strong>Phone 2</strong></p>
+            <article class="info-card compact">
+              <div><span>Spec</span><strong>Default Spec (v1.2.3)</strong></div>
+              <div><span>Chat Range</span><strong>1 to 50</strong></div>
+              <div><span>Total Messages</span><strong>50</strong></div>
+              <div><span>Est. Time</span><strong>~4m 10s</strong></div>
+            </article>
+            <button class="primary-action" type="button" data-screen="terminal">Confirm & Send</button>
+            <button class="text-action" type="button" data-screen="run">Cancel</button>
+          </div>
+        </section>
+
+        <section class="screen" id="screen-live">
+          <header class="topbar">
+            <button class="ghost-button" type="button" data-screen="devices" aria-label="Back">‹</button>
+            <h2>Live Status</h2>
+            <span class="pill online">● Online</span>
+          </header>
+
+          <div class="status-flow">
+            <article class="flow-card">
+              <span class="flow-icon yellow">⌛</span>
+              <h3>Waiting for Command</h3>
+              <p>Waiting for command from admin...</p>
+            </article>
+            <article class="flow-card active">
+              <span class="flow-icon green">▶</span>
+              <h3>Running</h3>
+              <p>Progress 24 / 50 (48%)</p>
+              <progress value="48" max="100"></progress>
+            </article>
+            <article class="flow-card error">
+              <span class="flow-icon red">!</span>
+              <h3>Error occurred</h3>
+              <p>Failed to send message at 24/50</p>
+            </article>
+          </div>
+          <button class="danger-action sticky-action" type="button">■ Stop Run</button>
+        </section>
+
+        <section class="screen" id="screen-components">
+          <header class="topbar">
+            <button class="ghost-button" type="button" data-screen="devices" aria-label="Back">‹</button>
+            <h2>Components</h2>
+            <span></span>
+          </header>
+
+          <div class="component-grid">
+            <article>
+              <h3>Mode Switch</h3>
+              <div class="segmented"><button>♕ Admin</button><button>▶ Run</button></div>
+            </article>
+            <article>
+              <h3>Sync Status</h3>
+              <div class="badge-row"><span class="sync ok">Synced</span><span class="sync warn">Syncing...</span><span class="sync bad">Sync Failed</span></div>
+            </article>
+            <article>
+              <h3>Error Banner</h3>
+              <div class="error-banner">× Failed to send message at 24/50</div>
+            </article>
+            <article>
+              <h3>Toast Notification</h3>
+              <div class="toast">✓ Spec saved successfully</div>
+            </article>
+          </div>
+        </section>
+
+        <nav class="bottom-nav" aria-label="Main navigation">
+          <button class="active" type="button" data-screen="devices">▣<span>Devices</span></button>
+          <button type="button" data-screen="specs">♙<span>Specs</span></button>
+          <button type="button" data-screen="terminal">▭<span>Terminal</span></button>
+          <button type="button" data-screen="live">▤<span>Logs</span></button>
+          <button type="button" data-screen="components">⚙<span>Settings</span></button>
+        </nav>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
